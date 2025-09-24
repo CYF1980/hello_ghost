@@ -365,9 +365,21 @@ def render_flicker_sprite(
         spr_rgb_f = spr_rgb.astype(_np.float32)
         a = spr_a.astype(_np.float32)
 
-        blended = spr_rgb_f * a + roi * (1.0 - a)
+        roi = bgr_img[int(yy):y2, int(xx):x2].astype(np.uint8)
+
+        # 1) 色調/亮度匹配
+        spr_rgb_adj = match_sprite_tone_to_bg(roi, spr_rgb)
+
+        # 2) 顆粒+微模糊，讓質感靠近底圖
+        spr_rgb_adj = add_matching_grain_and_soften(spr_rgb_adj, amount=0.08, blur_sigma=0.5)
+
+        # 3) feather + light wrap
+        spr_rgb_adj, a_soft = soften_alpha_and_light_wrap(roi, spr_rgb_adj, spr_a, feather_px=1.2, wrap_px=10, wrap_gain=0.1)
+
+        # 4) 用 Screen 模式混合
         out = bgr_img.copy()
-        out[int(yy):y2, int(xx):x2] = _np.clip(blended, 0, 255).astype(_np.uint8)
+        out[int(yy):y2, int(xx):x2] = blend_screen(roi, spr_rgb_adj, a_soft)
+
 
     # 更新狀態；結束時清掉 spr_idx
     state["remain"] = remain - 1
@@ -376,3 +388,88 @@ def render_flicker_sprite(
         state["remain"] = 0
 
     return out, state
+
+def match_sprite_tone_to_bg(bg_roi_bgr, spr_rgb):
+    # 轉灰階讓鬼更“膠卷感”
+    spr_gray = cv2.cvtColor(spr_rgb, cv2.COLOR_BGR2GRAY)
+    spr_rgb  = cv2.cvtColor(spr_gray, cv2.COLOR_GRAY2BGR)
+
+    # LAB mean/std 匹配，讓亮度/對比接近底圖
+    bg_lab  = cv2.cvtColor(bg_roi_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    spr_lab = cv2.cvtColor(spr_rgb,    cv2.COLOR_BGR2LAB).astype(np.float32)
+
+    for c in range(3):
+        m_s, s_s = spr_lab[..., c].mean(), spr_lab[..., c].std() + 1e-6
+        m_b, s_b = bg_lab[...,  c].mean(), bg_lab[...,  c].std() + 1e-6
+        spr_lab[..., c] = (spr_lab[..., c] - m_s) * (s_b / s_s) + m_b
+
+    spr_lab = np.clip(spr_lab, 0, 255).astype(np.uint8)
+    spr_rgb = cv2.cvtColor(spr_lab, cv2.COLOR_LAB2BGR)
+
+    # 降些微對比（更像老電視殘影）
+    spr_rgb = np.clip(spr_rgb.astype(np.float32) * 0.7, 0, 255).astype(np.uint8)
+    return spr_rgb
+
+def soften_alpha_and_light_wrap(bg_roi, spr_rgb, a, feather_px=2, wrap_px=12, wrap_gain=0.5):
+    """
+    bg_roi:  HxWx3 uint8
+    spr_rgb: HxWx3 uint8
+    a:       HxW or HxWx1 float(0~1)  -> 會被正規化為 HxWx1
+    回傳: (spr_wrapped_uint8, a_soft_float32_HxWx1)
+    """
+    import numpy as np
+    import cv2
+
+    # --- 強制 alpha 為 float32 且形狀 (H,W,1)
+    a = a.astype(np.float32)
+    if a.ndim == 2:
+        a = a[..., None]
+    elif a.ndim == 3 and a.shape[2] != 1:
+        # 若不小心是 3 通道，取單通道（或做平均都可）
+        a = a[..., :1]
+    a = np.clip(a, 0.0, 1.0)
+
+    # Feather：模糊後再強制成 (H,W,1)
+    a_soft = cv2.GaussianBlur(a, (0, 0), float(feather_px))
+    if a_soft.ndim == 2:
+        a_soft = a_soft[..., None]
+    a_soft = np.clip(a_soft, 0.0, 1.0).astype(np.float32)
+
+    # Light wrap
+    bg_blur = cv2.GaussianBlur(bg_roi, (0, 0), float(wrap_px)).astype(np.float32)
+    spr_f   = spr_rgb.astype(np.float32)
+
+    # (H,W,1) * scalar -> (H,W,1)，與 (H,W,3) 計算時自動廣播到 3 通道
+    wrap = (bg_blur - spr_f) * (a_soft * float(wrap_gain))
+    spr_wrapped = np.clip(spr_f + wrap, 0, 255).astype(np.uint8)
+
+    return spr_wrapped, a_soft
+
+def blend_screen(roi, spr_rgb, a):
+    """
+    roi, spr_rgb: HxWx3 uint8
+    a:            HxW / HxWx1 float(0~1)
+    """
+    import numpy as np
+
+    a = a.astype(np.float32)
+    if a.ndim == 2:
+        a = a[..., None]
+    elif a.ndim == 3 and a.shape[2] != 1:
+        a = a[..., :1]
+    a = np.clip(a, 0.0, 1.0)
+
+    roi_f = roi.astype(np.float32) / 255.0
+    spr_f = spr_rgb.astype(np.float32) / 255.0
+
+    screen = 1.0 - (1.0 - spr_f) * (1.0 - roi_f)
+    out = screen * a + roi_f * (1.0 - a)
+    return np.clip(out * 255.0, 0, 255).astype(np.uint8)
+
+def add_matching_grain_and_soften(spr_rgb, amount=0.12, blur_sigma=0.6):
+    h, w = spr_rgb.shape[:2]
+    noise = np.random.normal(0, 255*amount, (h, w, 3)).astype(np.float32)
+    spr = np.clip(spr_rgb.astype(np.float32) + noise, 0, 255)
+    if blur_sigma > 0:
+        spr = cv2.GaussianBlur(spr, (0,0), blur_sigma)
+    return spr.astype(np.uint8)

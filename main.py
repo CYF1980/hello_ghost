@@ -112,9 +112,9 @@ def main():
                         ghost_imgs,
                         state=ghost_state,
                         trigger_prob=GHOST_TRIGGER_P,
-                        min_len=1,
+                        min_len=3,
                         max_len=5,
-                        base_scale=0.75,
+                        base_scale=0.9,
                         jitter_px=6,
                     )
                     ghost_active = ghost_state.get("remain", 0) > 0
@@ -125,7 +125,7 @@ def main():
                     allowed = ["noise", "desync"] if ghost_active else None
                     overlay, flicker_state = weak_signal_flicker(
                         scene_with_ghost,
-                        strength=1.0,
+                        strength=0.8,
                         state=flicker_state,
                         trigger_prob=0.02,
                         min_len=3,
