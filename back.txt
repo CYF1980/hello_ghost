@@ -1,0 +1,177 @@
+
+import cv2
+import numpy as np
+
+def creepy_bw_effect(bgr_img, strength=1.0):
+    if strength <= 0:
+        return bgr_img
+
+    h, w = bgr_img.shape[:2]
+
+    # 1) 轉灰階 + CLAHE 對比
+    gray = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    gray = clahe.apply(gray)
+
+    # 2) unsharp mask
+    blur = cv2.GaussianBlur(gray, (0,0), 1.0)
+    sharp = cv2.addWeighted(gray, 1.6, blur, -0.6, 0)
+
+    # 3) 顆粒
+    noise = np.random.normal(0, 12, (h, w)).astype(np.float32)
+    noisy = np.clip(sharp.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+
+    # 4) 暗角
+    yy, xx = np.mgrid[0:h, 0:w]
+    cx, cy = w/2, h/2
+    r = np.sqrt(((xx - cx)**2 + (yy - cy)**2))
+    vignette = 1.0 - np.clip(r / (0.8*max(w, h)), 0, 1)  # 中心亮、邊緣暗
+    vignette = (vignette * (0.6 + 0.4*(1-strength)))  # 強度越大邊緣越暗
+    v_img = np.clip(noisy.astype(np.float32) * vignette.astype(np.float32), 0, 255).astype(np.uint8)
+
+    # 5) 輕微水平抖動（ghosting）
+    shift = int(2 + 4*strength)  # 2~6 pixels
+    M = np.float32([[1, 0, shift], [0, 1, 0]])
+    jitter = cv2.warpAffine(v_img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+
+    # merge 為 BGR
+    creepy_bgr = cv2.cvtColor(jitter, cv2.COLOR_GRAY2BGR)
+    return creepy_bgr
+
+def mix_effect(color_img, creepy_img, alpha):
+    """以 alpha 進行線性混合，alpha=1 完全詭異，0 完全彩色"""
+    alpha = np.clip(alpha, 0.0, 1.0)
+    return cv2.addWeighted(creepy_img, alpha, color_img, 1.0 - alpha, 0)
+
+def bbox_area_ratio(inf_result, frame_w, frame_h):
+    """計算偵測結果中，最大 bbox 面積佔整張影像的比例"""
+    max_ratio = 0.0
+    if inf_result is None or len(inf_result) == 0:
+        return max_ratio
+
+    for det in inf_result:
+        x1, y1, x2, y2 = det['bbox']
+        x1 = int(np.clip(x1, 0, frame_w-1))
+        y1 = int(np.clip(y1, 0, frame_h-1))
+        x2 = int(np.clip(x2, 0, frame_w-1))
+        y2 = int(np.clip(y2, 0, frame_h-1))
+        area = (x2 - x1) * (y2 - y1)
+        ratio = area / (frame_w * frame_h)
+        if ratio > max_ratio:
+            max_ratio = ratio
+    return max_ratio
+
+def extract_dets_for_ratio(inf_result):
+    dets = []
+    try:
+        for r in inf_result.results:
+            if 'bbox' in r:
+                dets.append({'bbox': r['bbox']})
+            elif 'box' in r:
+                dets.append({'bbox': r['box']})
+    except Exception:
+        pass
+    return dets
+
+def compute_alpha_from_ratio(ratio, no_face):
+    if no_face:
+        return 1.0
+    cap = 0.01
+    if ratio >= cap:
+        return 0.0
+    return (cap - ratio) / cap
+
+def broken_light_flicker(bgr_img, strength=1.0, state=None,
+                         trigger_prob=0.03, min_len=3, max_len=10):
+    """
+    當 strength 接近 1.0（完全詭異）時，有機率觸發一段閃爍。
+    state: dict 保存持續幀數等狀態；可在主迴圈重複傳入以維持效果。
+    trigger_prob: 每幀觸發機率（0.03 = 3%）
+    min_len/max_len: 單次閃爍持續幀數範圍
+    """
+    if state is None:
+        state = {"remain": 0}
+
+    # 非滿詭異時不閃並清零狀態
+    if strength < 0.98:
+        state["remain"] = 0
+        return bgr_img, state
+
+    h, w = bgr_img.shape[:2]
+    out = bgr_img
+
+    # 若目前沒在閃，擲骰決定要不要開始
+    if state["remain"] <= 0:
+        if np.random.rand() < trigger_prob:
+            state["remain"] = np.random.randint(min_len, max_len + 1)
+
+    # 執行閃爍（仍在持續期）
+    if state["remain"] > 0:
+        # 亮度忽明忽暗（>1變亮，<1變暗），再加一點雜訊
+        gain = np.random.uniform(0.6, 1.35)
+        noisy = (out.astype(np.float32) * gain)
+
+        noise = np.random.normal(0, 9, out.shape).astype(np.float32)
+        noisy = np.clip(noisy + noise, 0, 255)
+
+        # ── 70s 老電視「滾動雜訊條」效果 ─────────────────────────────────────────
+        band_h = max(12, int(h * np.random.uniform(0.05, 0.12)))
+
+        # 讓雜訊條位置是「連續滾動」而不是每幀隨機跳
+        if "bar_y" not in state:
+            state["bar_y"] = np.random.randint(0, max(1, h - band_h))
+        if "bar_v" not in state:
+            state["bar_v"] = np.random.choice([-3, -2, -1, 1, 2, 3])
+
+        state["bar_y"] = (state["bar_y"] + state["bar_v"]) % max(1, (h - band_h + 1))
+        y0 = int(state["bar_y"])
+
+        # 軟邊亮度外形（中心亮、邊緣柔和），混一點奇數/偶數行差異模擬掃描線
+        t = np.linspace(-1, 1, band_h, dtype=np.float32).reshape(band_h, 1, 1)
+        edge = np.clip(1.0 - (t * t * 3.0), 0.0, 1.0)       # 類高斯/拋物線外形
+        profile = 0.55 + 0.75 * edge                        # 基礎亮度倍率
+        scan_mask = (np.random.rand(band_h, 1, 1).astype(np.float32) * 0.35 + 0.65)
+        scan_mask[::2] *= 0.85                               # 偶數行稍暗
+        profile *= scan_mask
+
+        # 擷取條帶區域並加入水平抖動（sync tear 感）
+        bar = noisy[y0:y0+band_h].astype(np.float32)
+        jitter = np.random.randint(-3, 4)
+        M2 = np.float32([[1, 0, jitter], [0, 1, 0]])
+        bar = cv2.warpAffine(bar, M2, (w, band_h), borderMode=cv2.BORDER_REFLECT)
+
+        # 輕微色差/相位錯位（RGB 各自水平位移，造成彩邊）
+        ch_shifts = [-1, 0, 1] if np.random.rand() < 0.7 else [0, 1, -1]
+        for c, sh in enumerate(ch_shifts):
+            if sh != 0:
+                Mc = np.float32([[1, 0, sh], [0, 1, 0]])
+                bar[:, :, c] = cv2.warpAffine(bar[:, :, c], Mc, (w, band_h), borderMode=cv2.BORDER_REFLECT)
+
+        # 帶內 RF 雪花與細線條（明暗線/雪花顆粒）
+        snow = np.random.normal(12, 20, (band_h, w, 1)).astype(np.float32)
+        # 偶發的強亮細線
+        if np.random.rand() < 0.35:
+            n_lines = np.random.randint(1, 4)
+            for _ in range(n_lines):
+                ly = np.random.randint(0, band_h)
+                line_amp = np.random.uniform(80, 160)
+                bar[ly:ly+1, :, :] = np.clip(bar[ly:ly+1, :, :] + line_amp, 0, 255)
+
+        # 套用亮度外形與雪花
+        bar = np.clip(bar * profile + snow, 0, 255)
+
+        # 偶爾出現偏暗滾動帶（電源不足/同步不穩）
+        if np.random.rand() < 0.25:
+            dark_gain = np.random.uniform(0.55, 0.8)
+            bar *= dark_gain
+
+        noisy[y0:y0+band_h] = bar
+
+        # 輕微抖動，營造接觸不良
+        shift = np.random.randint(-2, 3)
+        M = np.float32([[1, 0, shift], [0, 1, 0]])
+        out = cv2.warpAffine(noisy.astype(np.uint8), M, (w, h), borderMode=cv2.BORDER_REFLECT)
+
+        state["remain"] -= 1
+
+    return out.astype(np.uint8), state

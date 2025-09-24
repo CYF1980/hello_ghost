@@ -1,0 +1,56 @@
+# Python __pycache__ 與 compiled files
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+*.pyo
+
+# VSCode / PyCharm 等 IDE 的設定
+.vscode/
+.idea/
+
+# 虛擬環境資料夾
+venv/
+env/
+ENV/
+.eric_pi_robot_venv/
+bin/
+lib/
+lib64/
+include/
+share/
+etc/
+pyvenv.cfg
+
+# pip 套件快取
+*.egg-info/
+.installed.cfg
+*.dist-info/
+
+# LGD 類型的暫存或編譯產物
+.lgd-*/
+
+# Jupyter notebook checkpoints（如果你未來會用到）
+.ipynb_checkpoints/
+
+# 作業系統產生的雜項
+.DS_Store
+Thumbs.db
+
+# 日誌、暫存檔
+*.log
+*.tmp
+*.swp
+*.bak
+
+# 測試輸出、debug 結果
+debug/*.log
+debug/*.tmp
+
+# 環境變數檔（如果你用 .env）
+.env
+.env.*
+
+# 忽略你的特定本地快取資料夾
+/home/chuangyf/proj/eric_pi_robot/debug/__pycache__/
