@@ -15,4 +15,8 @@ CAM_INDEX = 0
 FRAME_W = 640
 FRAME_H = 640
 
+FULLSCREEN = True                  # 全螢幕（無邊框）
+SCREEN_MODE = "auto"               # "auto" | "4k" | "7inch" | "custom"
+SCREEN_W = 0                       # custom 模式用；或 auto 失敗時備援
+SCREEN_H = 0
 

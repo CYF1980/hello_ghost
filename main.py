@@ -112,10 +112,10 @@ def main():
                         ghost_imgs,
                         state=ghost_state,
                         trigger_prob=GHOST_TRIGGER_P,
-                        min_len=3,
-                        max_len=5,
-                        base_scale=0.9,
-                        jitter_px=6,
+                        min_len=8,
+                        max_len=28,
+                        base_scale=0.75,
+                        jitter_px=3,
                     )
                     ghost_active = ghost_state.get("remain", 0) > 0
                 # 無臉：啟動/持續弱訊號閃爍效果
@@ -125,11 +125,11 @@ def main():
                     allowed = ["noise", "desync"] if ghost_active else None
                     overlay, flicker_state = weak_signal_flicker(
                         scene_with_ghost,
-                        strength=0.8,
+                        strength=1.0,
                         state=flicker_state,
-                        trigger_prob=0.02,
+                        trigger_prob=0.01,
                         min_len=3,
-                        max_len=12,
+                        max_len=5,
                         allowed_modes=allowed,   # ← 新參數
                         # 也可加上 mode_weights 調口味，例如：{"noise":3,"desync":2,"contrast":2,"roll":1}
                     )
